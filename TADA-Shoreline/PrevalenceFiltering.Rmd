@@ -1,0 +1,649 @@
+---
+title: "Agglomeration and prevalence filtering for Bishop Dec. 2021 - Take 2"
+author: "Chris Fields, Jessica Holmes""
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    pdf_print: paged
+    fig_height: 6
+    fig_width: 12
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+    fig_height: 6
+    fig_width: 12
+  pdf_document:
+    toc: yes
+  powerpoint_presentation:
+    toc: no
+    fig_height: 6
+    fig_width: 12
+---
+
+# Intro
+
+This covers agglomeration steps and prevalence filtering for the phthalate exposure in mice study.
+
+# Set up
+
+Code (not shown in the report) is initialized and loaded here.  We don't include the code in the report but make this available as needed; please see the [Github repository](https://github.com/HPCBio/flaws-2020March-16S)for this project for the final version.
+
+```{r PrevalenceFiltering-1, echo=TRUE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r PrevalenceFiltering-2, include=FALSE}
+# Note that not all libraries will be needed.  Most phyloseq code uses ggplot and tidyverse internally, therefore we explicitly load here
+library(knitr)
+library(tidyverse)
+library(phyloseq)
+
+# this seems to have issues with caching and phyloseq
+# library(ggtree) 
+
+# For normalization
+library(metagenomeSeq)
+
+# phylogenetic tree input
+library(ape)
+
+# read/modify BIOM 
+library(biomformat)
+
+# ggplot functions for trees and dendrograms
+library(ggdendro)
+
+# distance measures, PERMANOVA, ANOSIM
+library(vegan)
+
+# generation of stats values for graphs
+library(ggpubr)
+
+# normalization (CLR)
+library(mixOmics)
+
+# to get labels2color
+library(WGCNA)
+
+# mixed models (needs to be updated)
+library(lme4)
+library(lmerTest)
+library(nlme)
+
+# sample decontamination
+library(decontam)
+
+# to get post-hoc tests for mixed-model tests 
+library(lsmeans)
+library(devtools)
+
+#Other
+library(gridExtra)
+
+# needed in case we want to use ANCOM
+#library(exactRankTests)
+
+# this is to load some extension helper code, see: https://github.com/HPCBio/phyloseq-extended
+devtools::load_all('~/src/phyloseq-extended')
+```
+
+```{r PrevalenceFiltering-3, include=FALSE}
+# Setting up the analysis, including adding helper functions.  The document won't include the actual code, but the functions are present in the Rmd document.  The functions here include ones to:
+options(stringsAsFactors = FALSE)
+theme_set(theme_bw())
+```
+
+```{r PrevalenceFiltering-4, include=FALSE}
+# Remove the tags on the taxonomic ranks, which are redundant with the column headers.
+stripTaxaTags <- function(physeq) {
+  oldMA <- as(tax_table(physeq), "matrix")
+  newMA <- apply(oldMA, 2, function(x) {sub('\\w__','', x)})
+  if (inherits(physeq, "taxonomyTable")) {
+      return(tax_table(newMA))
+  }
+  else {
+      tax_table(physeq) <- tax_table(newMA)
+      return(physeq)
+  }
+}
+```
+
+```{r PrevalenceFiltering-5 }
+# Convert sequences to names (culled from https://github.com/LangilleLab/microbiome_helper/blob/master/convert_dada2_out.R) 
+
+renameTaxIds <- function(physeq, file.name="seqs.fasta") {
+  suppressMessages(require("ShortRead"))
+  seqtab.physeq <- otu_table(physeq)
+  seqs <- colnames(seqtab.physeq)
+  ids_study <- paste("seq", 1:ncol(seqtab.physeq), sep = "_")
+  seqs.dna <- ShortRead(sread = DNAStringSet(seqs), id = BStringSet(ids_study))
+  # Write out fasta file.
+  writeFasta(seqs.dna, file = file.name)
+  taxa_names(physeq) <- ids_study
+  # TODO: add the sequences back to the phyloseq instance
+  # physeq <- merge_phyloseq(physeq)
+  return(physeq)
+}
+```
+
+```{r PrevalenceFiltering-6}
+# original code: https://github.com/twbattaglia/btools/blob/master/R/estimate_pd.R
+estimate_pd <- function(phylo) {
+  # Error if input is not of class phylo
+  if(class(phylo) != "phyloseq"){
+    stop("Input file is not of class 'phyloseq'.")
+  }
+
+  # Error if no class phy_tree
+  if(!(.hasSlot(phylo, "phy_tree"))){
+    stop("Could not find tree slot in phylo object.")
+  }
+  
+  if (!require('picante')) stop("Function requires the picante library.")
+
+  # Transpose if needed
+  # Adapted from phyloseq/vegan import
+  OTU <- phyloseq::otu_table(phylo)
+  if (taxa_are_rows(OTU)) {
+    OTU <- t(OTU)
+  }
+
+  # Get matrix version of OTU table
+  otutable <- as(OTU, "matrix")
+
+  # Get phylogenetic tree from phyloseq object
+  tree <- phyloseq::phy_tree(phylo)
+
+  # Print status message
+  message("Calculating Faiths PD-index...")
+
+  # If object is greater than 10mb, then print status message
+  if(object.size(otutable) > 10000000){
+    message("This is a large object, it may take awhile...")
+  }
+
+  # Calculate Faith's PD-index
+  #
+  pdtable <- picante::pd(otutable, tree, include.root = F)
+
+  # Return data frame of results
+  return(pdtable)
+}
+```
+
+```{r PrevalenceFiltering-7}
+# CLR normalization 
+# (from McMurdie (Meth Mol Bio 2018) supplemental package)
+zero_comp = function(x){
+  if(taxa_are_rows(x)){x <- t(x)}
+  matx = otu_table(x)
+  # `zCompositions::cmultRepl` expects the samples to be in rows and OTUs to be in columns
+  matxzc = zCompositions::cmultRepl(matx, method="CZM", output="p-counts")
+  otu_table(x) <- otu_table(matxzc, taxa_are_rows = FALSE)
+  return(x)
+}
+# CLR definition
+geometric_mean = function(x){
+  exp(mean(log(x)))
+}
+clr = function(x, base=2){
+  x <- log((x / geometric_mean(x)), base)
+}
+phyloseq_CLR = function(physeq){
+  suppressMessages({physeq <- zero_comp(physeq)})
+  return(transform_sample_counts(physeq, fun = clr))
+}
+```
+
+# Load data
+
+Load in the filtered data from part 1:
+
+```{r AlphaDiversity-PacBio-8}
+physeq.filtered <- readRDS('./results/phyloseq.filtered.pt1.RDS')
+physeq.filtered
+```
+
+# Additional Filtering
+
+We performed some high level filtering to remove artifacts and problematic data. Next step is agglomeration of count data and prevalence filtering.
+
+## Explore taxon data 
+
+What is the range in total counts per taxon?
+
+```{r PrevalenceFiltering-8 }
+range(taxa_sums(physeq.filtered))
+```
+
+Some taxa have no counts, and need to be removed.  
+
+What does the distribution look like at the low end?
+```{r PrevalenceFiltering-9 }
+hist(log2(taxa_sums(physeq.filtered)), 1000)
+```
+1st analysis: There's a lot on the low end, that will likely need to be filtered out.
+Current analysis: Not a whole lot at the low end and looks like a normal distribution. Seems that the Shoreline pipeline removed a lot of the junk beforehand.
+
+What about sample counts?  What is the range in total counts per sample?
+```{r PrevalenceFiltering-10 }
+range(sample_sums(physeq.filtered))
+```
+
+We have some on the low end, with `r sum(sample_sums(physeq.filtered) <= 5000)` samples less than 5k counts.
+
+```{r PrevalenceFiltering-11 }
+p <- ggplot(data = data.frame(
+    SampleSums = sample_sums(physeq.filtered),
+    Names = factor(sample_names(physeq.filtered), ordered = TRUE,
+                   levels = sample_names(physeq.filtered)),
+    Group = factor(sample_data(physeq.filtered)$Location, ordered = TRUE)
+), aes(y = SampleSums, x = Names, fill = Group))
+p <- p + geom_bar(stat = 'identity' )
+p <- p + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p
+```
+
+One issue is the library sizes vary considerably, and there's no real pattern to it.
+
+How do the ASV counts correlate with the read counts?
+
+```{r PrevalenceFiltering-12 }
+myData <- data.frame(
+  Name = sample_names(physeq.filtered),
+  OTUSums = sample_sums(physeq.filtered),
+  Reads = as.numeric(sample_data(physeq.filtered)$input),
+  Group = sample_data(physeq.filtered)$Location
+)
+p <- ggplot(data = myData, aes(x = Reads, y = OTUSums))
+p <- p + geom_smooth(method = "gam", color = "lightgreen")
+p <- p + geom_smooth(method = "lm", color = "lightblue")
+p <- p + geom_point(aes(color = Group))
+p
+```
+
+Seems to be quite linear.
+
+Next we filter based on the features prevalent in the samples.  We will also switch the order of the filtering and tree-based (tip) agglomeration. If the tips are noisy (strain-level variation that is difficult to assign), then we'll proceed with this type of filtering.
+
+## Tip agglomeration
+
+What does the current tree look like?
+
+```{r PrevalenceFiltering-13}
+p <- plot_tree(physeq.filtered, 
+          nodelabf = nodeplotblank, 
+          color="Sample", 
+          ladderize = "left", 
+          method = "treeonly") +
+  ggtitle(paste0("Original tree: ", ntaxa(physeq.filtered), " taxa")) +
+  theme(plot.title = element_text(size = 10))
+library(plotly)
+
+ggplotly(p)
+```
+
+Zooming into the tips indicates there are a many sequences with very small differences, so tip agglomeration should be useful in this case.
+
+What is the distribution of tree edge lengths?
+
+```{r PrevalenceFiltering-14}
+hist(log(phy_tree(physeq.filtered)$edge.length), 
+     xlab = "Edge Length (log)", 
+     main = "Edge length distribution")
+```
+1st analysis: There are a lot on the short end.
+Current analysis: There are a small number on the short end, and even less on the long end.
+
+
+### Clip out long branches
+
+```{r PrevalenceFiltering-14.B}
+tmp <- phy_tree(physeq.filtered)
+
+# grab the tip lengths and format for ggplot
+# note the tip length is actually log scale to view this at a reasonable scale
+treeTips <- data.frame(
+  ID = tmp$tip.label,
+  Tip.Length = log(tmp$edge.length[tmp$edge[,2] <= Ntip(tmp)])
+)
+
+p <- treeTips %>%
+  ggplot( aes(x=Tip.Length, fill = "black")) +
+  geom_histogram( color="#e9ecef", alpha=0.6, position = 'identity', bins = 100)
+
+ggplotly(p)
+```
+
+You have to zoom into the right a bit:
+
+```{r}
+p + xlim(-5,3) + ylim(0,10)
+```
+
+Just 5 stand out as being too long. Here are the top 5 lengths to be sure.
+
+```{r}
+longbranch <- treeTips[order(treeTips$Tip.Length, decreasing = TRUE)[1:5],]
+knitr::kable(longbranch)
+```
+
+What classifications are at the top of this list?
+
+```{r}
+tmp2 <- cbind(tax_table(physeq.filtered), as.data.frame(taxa_sums(physeq.filtered)))
+
+knitr::kable(tmp2[longbranch$ID,])
+```
+
+The top 5 are only classified up to the Phylum or Class level, so it wouldn't hurt to remove them. I also ran the following steps without removing them, and the results ended up being the same after prevalence filtering. 
+
+```{r}
+#What samples are these in?
+tmp <-suppressWarnings(prune_taxa(taxa_names(physeq.filtered) %in% longbranch$ID,
+                  physeq.filtered))
+
+ssums <- sample_sums(tmp)
+ssums[ssums > 0]
+```
+
+These are in 2 samples.
+
+```{r}
+ physeq.filtered <- prune_taxa(!(taxa_names(physeq.filtered) %in% longbranch$ID), physeq.filtered)
+# OR
+# physeq.filtered <- subset_taxa( physeq.filtered, !(Class %in% c("Unclassified","Cyanobacteriia")))
+# physeq.filtered
+```
+
+How's the tree look now?
+
+```{r}
+p <- plot_tree(physeq.filtered,
+          nodelabf = nodeplotblank,
+          color="Sample",
+          ladderize = "left",
+          method = "treeonly") +
+  ggtitle(paste0("Original tree: ", ntaxa(physeq.filtered), " taxa")) +
+  theme(plot.title = element_text(size = 10))
+
+ggplotly(p)
+```
+Long branches are gone
+
+Agglomeration is based on the cophenetic distance, the pairwise distances between tips on the tree. These are pretty short; let's see what that distribution looks like
+
+```{r PrevalenceFiltering-15}
+cp_phylo <- cophenetic.phylo(phy_tree(physeq.filtered))
+
+hist(cp_phylo, 
+     breaks = 100, 
+     main = "Pairwise distance between tips", 
+     xlab = "Distance between tips",
+     xlim = c(-0.5, 3))
+
+cutoff <- c(seq(0.025, 0.15, 0.025), 0.2, 0.3, 0.5, 0.75, 1, 2)
+abline(v=cutoff, col = "red")
+text(cutoff, max(hist(cp_phylo, 100, plot=FALSE)$counts), labels = cutoff, pos = 2, srt = 90, cex = .5 )
+```
+
+The red lines are some arbitrary test cutoffs. There's no clear shoulder at which to make a cutoff, but 0.1 & 0.3 might be the closest to a shoulder.
+
+Let's replot in log scale.  
+
+```{r PrevalenceFiltering-16}
+hist(log(cp_phylo), 
+     breaks = 100, 
+     main = "Pairwise distance between tips", 
+     xlab = "Distance between tips (log)",
+     xlim = c(-5, 2))
+
+abline(v=log(cutoff), col = "red")
+text(log(cutoff), max(hist(log(cp_phylo), 100, plot=FALSE)$counts), labels = cutoff, pos = 2, srt = 90, cex = .5 )
+```
+
+Even less clear. Let's try this at various cutoffs.
+
+```{r PrevalenceFiltering-17}
+# Use the cutoffs listed above
+
+# this takes some time to run :).  There is a speedyseq package with a faster tip_glom implementation, might be worth checking
+pseqs <- lapply(cutoff[1:8], function(x) {tip_glom(physeq.filtered, h = x)})
+
+names(pseqs) <- cutoff[1:8]
+```
+
+Note there is a `phyloseq` instance with no tree now. Let's only plot the ones that have a tree. 
+
+```{r PrevalenceFiltering-18}
+# In order to screen for instances with a tree we need to use tryCatch as checking the tree slot with phy_tree will error if it is NULL)
+
+pseqs.final <- pseqs[sapply(pseqs, function(x) {
+  !is.null( tryCatch({phy_tree(x)}, error = function(cond) { return(NULL) }) )
+  }, simplify = TRUE)]
+
+plots <- sapply(names(pseqs.final), function(x) {
+  plot_tree(pseqs.final[[x]], 
+          nodelabf = nodeplotblank,
+          ladderize = "left", 
+          method = "treeonly") + 
+  ggtitle(paste0("Height:",x, ", ", ntaxa(pseqs.final[[x]]), " taxa")) + 
+    theme(plot.title = element_text(size = 10))
+  }, simplify = FALSE
+  )
+
+grid.arrange(grobs = prepend(plots, list(Original = p)),
+             nrow = 3)
+
+```
+
+At each cutoff, about 100 are lost, until going from 0.075 to 0.1. Let's get a closer look at the other cutoffs by changing the number below. Last time I went with a cutoff of 0.05, so I should try either 0.075 or 0.1 this time.
+
+```{r PrevalenceFiltering-19}
+p <- plot_tree(pseqs.final[['0.1']],
+          label.tips = "Genus",
+          ladderize = "left",
+          justify = "left",
+          color = 'Location')
+p
+```
+No strong differences between the options. But I'll try 0.075 first and see how that performs in the downstream steps.
+
+Here's a closer look.
+```{r PrevalenceFiltering-20}
+#ggplotly(p)
+ggplotly(plot_tree(pseqs.final[['0.1']],
+          # nodelabf = nodeplotblank,
+          ladderize = "left",
+          method = "treeonly"))
+```
+
+Let's confirm that no sample loss occurred with the tip_glom() code. This is just a sanity check. Nothing should be lost.
+
+```{r PrevalenceFiltering-21}
+physeq.check <- pseqs.final[['0.05']]
+
+p <- ggplot(data = data.frame(
+    SampleLoss = sample_sums(physeq.check) / sample_sums(physeq.filtered),
+    Names = factor(sample_names(physeq.check), ordered = TRUE, levels = sample_names(physeq.check)),
+    Group = factor(sample_data(physeq.check)$Location, ordered = TRUE)
+), aes(y = SampleLoss, x = Names, fill = Group))
+p <- p + geom_bar(stat = 'identity' )
+p <- p + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p
+```
+
+We'll pick the 0.1 height cutoff sample for the next steps.
+
+```{r PrevalenceFiltering-22}
+physeq.glom <- pseqs.final[['0.1']]
+```
+
+<!-- ## Tax agglomeration  -->
+
+<!-- What is the effect of taxonomic agglomeration per rank? Let's do a quick run through on the samples; ranks that are not assigned are removed by default, so let's see what happens. -->
+
+<!-- ```{r PrevalenceFiltering-23 } -->
+<!-- taxglom_per_rank = function(physeq.glom, rank = "Species") { -->
+<!--   # TODO: add sanity check -->
+<!--   glommedPhyseq <- tax_glom(physeq.glom, taxrank = rank, NArm = TRUE) -->
+<!--   p <- ggplot(data = data.frame( -->
+<!--       SampleLoss = sample_sums(glommedPhyseq) / sample_sums(physeq.filtered), -->
+<!--       Names = factor(sample_names(glommedPhyseq),  -->
+<!--                      ordered = TRUE,  -->
+<!--                      levels = sample_names(glommedPhyseq)), -->
+<!--       Group = factor(sample_data(glommedPhyseq)$Treatment, ordered = TRUE) -->
+<!--   ), aes(y = SampleLoss, x = Names, fill = Group)) + -->
+<!--     geom_bar(stat = 'identity' ) +  -->
+<!--     theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  -->
+<!--     ggtitle(paste0("Rank: ", rank)) -->
+<!--   return(p) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r PrevalenceFiltering-24 } -->
+<!-- ranks <- c("Species", "Genus", "Family", "Order") -->
+
+<!-- plots <- lapply(ranks, function(x) {  -->
+<!--   p <- taxglom_per_rank(physeq.filtered, rank = x) -->
+<!--   p + theme(legend.position = "none") + expand_limits(y = c(0, 1)) -->
+<!-- }) -->
+
+<!-- grid.arrange(grobs = plots) -->
+<!-- ``` -->
+
+<!-- Quite a bit lost with species!  Are there rows in there with 'NA'? -->
+
+<!-- ```{r PrevalenceFiltering-25 } -->
+<!-- #apply(tax_table(physeq.glom), 2, function(x) sum(x != "Unclassified")) -->
+<!-- apply(tax_table(physeq.glom), 2, function(x) sum(is.na(x))) -->
+<!-- ``` -->
+
+<!-- Yes, though not nearly as many as the overall # of taxa. This suggests maybe using the phylogenetic tree and `tip_glom`. We have been seeing this work with better fidelity with more recent data sets, particularly from PacBio sequences, but it does require a little checking on the phylogenetic branch lengths to determine the best cutoff.  The code below is based on work Lindsay Clark and Jenny have done in the group.  -->
+
+## Features and Prevalence tables
+
+For the filtering, let's assign the original filtered data to a temp variable prior to prevalence filtering.
+
+```{r PrevalenceFiltering-26 }
+physeq0 <- physeq.glom
+physeq0
+```
+
+Suggested based on the Callahan dada2 workflow (F1000Research, 2017).  This is a bit of data exploration to see how many features are present per taxa.
+
+```{r PrevalenceFiltering-27 }
+table(tax_table(physeq0)[,"Phylum"], exclude = NULL)
+```
+Acidobacteriota Actinobacteriota     Bacteroidota      Chloroflexi    Cyanobacteria 
+               2              123               13                2                2 
+      Firmicutes   Fusobacteriota   Proteobacteria 
+             256                1              168 
+There are number with low features (1-2 OTUs). But I don't see any NA present, so I'll skip the next step.
+
+```{r PrevalenceFiltering-28 }
+#physeq0 <- subset_taxa(physeq0, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+#physeq0
+```
+
+
+Now, let's get an idea how many taxa in the samples have an ASV count greater than 1.  We can make this more or less strict as needed.
+
+```{r PrevalenceFiltering-29 }
+# What is this doing?  It calculates a vector with the count being the # samples with a count > 0.
+
+# Note: make sure you are using *raw counts* here; if you use proportional
+# counts make sure to adjust the function appropriately
+prevdf <- apply(otu_table(physeq0),  # counts
+               # use row or column depending on the data
+               MARGIN = ifelse(taxa_are_rows(physeq0), yes = 1, no = 2), 
+               # how many times the counts in the samples are greater than 0
+               FUN = function(x){sum(x > 0)}  
+               )
+prevdf <- data.frame(Prevalence =  prevdf, # num samples counts are > 0
+                     TotalAbundance = taxa_sums(physeq0), # total abundance
+                     tax_table(physeq0)) # tax ID and ranks
+```
+
+Here is a quick summary of the prevalence results.  These are performed per ASV but summarized at the Phylum rank, with the 
+
+```{r PrevalenceFiltering-30 }
+# a quick high level summary at the Phylum rank.
+tmp <- plyr::ddply(prevdf, "Phylum", function(df1) { cbind(mean(df1$Prevalence), sum(df1$Prevalence)) })
+colnames(tmp) <- c("Phylum", "mean", "sum")
+knitr::kable(tmp)
+```
+
+We can plot these out to get more resolution.  
+
+Let's graph the prevalence threshold using 0.05 (5%) as the standard.
+
+```{r PrevalenceFiltering-31}
+pthresh <- 0.05
+```
+
+This is around `r round(pthresh * nsamples(physeq0))` samples.  We can modify this setting, but we'll leave as is for now.  We may want to modify this to not reflect the specific group but the treatments (e.g. ensure we're not losing any taxa based on the treatment condition)
+
+This plot shows the fraction of samples vs the total abundance for that, which helps give some idea on what to retain.
+
+```{r PrevalenceFiltering-32 }
+ggplot(prevdf,
+       aes(TotalAbundance, Prevalence / nsamples(physeq0), color = Phylum)) +
+  geom_hline(yintercept = pthresh, alpha = 0.5, linetype = 2) +
+  geom_point(size = 2, alpha = 0.4) +
+  scale_x_log10() +
+  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position = "none")
+```
+
+The horizontal line indicates the cutoff in this case. Let's apply it and see what happens. It seems that there are a lot of taxa that are only in 1 sample.
+
+```{r PrevalenceFiltering-33 }
+prevThreshold <- pthresh * nsamples(physeq.glom)
+
+keepTaxa <- rownames(prevdf)[(prevdf$Prevalence >= prevThreshold)]
+physeq.prev <- prune_taxa(keepTaxa, physeq.glom)
+physeq.prev
+```
+phyloseq-class experiment-level object
+otu_table()   OTU Table:         [ 104 taxa and 28 samples ]
+sample_data() Sample Data:       [ 28 samples by 13 sample variables ]
+tax_table()   Taxonomy Table:    [ 104 taxa by 7 taxonomic ranks ]
+phy_tree()    Phylogenetic Tree: [ 104 tips and 103 internal nodes ]
+refseq()      DNAStringSet:      [ 104 reference sequences ]
+
+This reduces it down considerably!  From 614 taxa to 95. Due to this, I'm going to change my tip glom cutoff to 0.1 instead of 0.075. This allows us to retain 104 taxa, which is a bit better. How does this affect counts?
+
+```{r PrevalenceFiltering-34 }
+p <- ggplot(data = data.frame(
+    SampleLoss = sample_sums(physeq.prev) / sample_sums(physeq.glom),
+    Names = factor(sample_names(physeq.prev), ordered = TRUE, levels = sample_names(physeq.prev)),
+    Group = factor(sample_data(physeq.prev)$Location, ordered = TRUE)
+), aes(y = SampleLoss, x = Names, fill = Group))
+p <- p + geom_bar(stat = 'identity' )
+p <- p + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p
+```
+
+There is quite a bit of count/sequence loss, but our prevalence threshold is not unreasonable. It essentially checks that an ASV is present in at least 2 samples. So everything that was lost, was only present in one sample.
+
+# Save
+
+We'll save at this stage, and then reload the data for diversity analysis and differential abundance.
+
+```{r PrevalenceFiltering-35 }
+# Save
+if (!file.exists('./results/PrevalenceFiltering/')){
+    dir.create(file.path('./results/PrevalenceFiltering/'), recursive = TRUE)
+}
+saveRDS(physeq.prev, file = "./results/PrevalenceFiltering/phyloseq.prevfiltered.keepLongBranches.RDS")
+```
+
+# Session information
+
+```{r PrevalenceFiltering-36 }
+sessionInfo()
+```
+
