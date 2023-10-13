@@ -1,6 +1,6 @@
 ---
-title: "Wilkens-Bishop Shoreline Project - Dec 2021 - Take 2"
-author: "Chris Fields, Jessica Holmes"
+title: "Wilkens-Bishop Dec 2021 - Revisiting PacBio pipeline results in Oct 2023"
+author: "Jessica Holmes, Chris Fields"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
   html_document:
@@ -92,6 +92,7 @@ library(devtools)
 library(plotly.microbiome)
 library(microbiome)
 library(ranacapa)
+library(Biostrings)
 
 # this is to load some extension helper code, see: https://github.com/HPCBio/phyloseq-extended
 devtools::load_all('./phyloseq-extended/')
@@ -215,7 +216,7 @@ There is one PacBio run with all of the data.  Load it in along with the relevan
 First, let's load in the newer taxonomic analysis using QIIME2.  It looks like this:
 
 ```{r}
-q2 <- readRDS('Phyloseq/tax_final.simple.RDS')
+q2 <- readRDS('2021-Dec-PacBio/Phyloseq/tax_final.simple.RDS')
 knitr::kable(head(q2))
 ```
 
@@ -225,9 +226,9 @@ knitr::kable(head(q2))
 ```
 
 ```{r}
-seqtab.tmp <- readRDS('Phyloseq/seqtab_final.simple.RDS')
-tree.tmp <- read_tree('Plain/Trees/rooted.newick')
-asvs.tmp <- Biostrings::readDNAStringSet('Plain/Sequences/asvs.simple.fna', format = 'fasta')
+seqtab.tmp <- readRDS('2021-Dec-PacBio/Phyloseq/seqtab_final.simple.RDS')
+tree.tmp <- read_tree('2021-Dec-PacBio/Plain/Trees/rooted.newick')
+asvs.tmp <- Biostrings::readDNAStringSet('2021-Dec-PacBio/Plain/Sequences/asvs.md5.nochim.fna', format = 'fasta')
 physeq.pacbio <- phyloseq(
   otu_table(seqtab.tmp, taxa_are_rows = F),
   tax_table(q2),
@@ -236,6 +237,8 @@ physeq.pacbio <- phyloseq(
 
 physeq.pacbio
 ```
+1804 ASVs and 32 samples.
+
 
 The sample names need to be cleaned up
 
@@ -262,13 +265,16 @@ Load in experimental data on samples (metadata).  Here are the first few rows:
 
 ```{r}
 library(readxl)
-tmp <- read_tsv('../reference/Bishop_sample_metadata.txt', comment = '#q2')
+tmp <- read_tsv('reference/Bishop_sample_metadata.txt', comment = '#q2')
 tmp$Well <- factor(tmp$Well)
 tmp$Horse <- factor(tmp$Horse)
 tmp$Sample_Type <- factor(tmp$Sample_Type)
 tmp$Location <- factor(tmp$Location)
 tmp$Sex<- factor(tmp$Sex)
 tmp$Breed <- factor(tmp$Breed)
+tmp$Simple_Type <- tmp$Sample_Type
+levels(tmp$Simple_Type) <- c("BAL","NPL-TTA","NPL-TTA")
+
 
 colnames(tmp)[1] <- "SampleID"
 
@@ -283,17 +289,17 @@ getN <- function(x) sum(getUniques(x))
 
 # the gsub here might be a bit brittle...
 dadas <- as.data.frame(
-    sapply(readRDS("dada2/dada2-Derep-Pooled/all.dds.RDS"), getN)
+    sapply(readRDS("2021-Dec-PacBio/dada2/dada2-Derep-Pooled/all.dds.RDS"), getN)
     )
 rownames(dadas) <- gsub('.filtered.*','',rownames(dadas))
 dadas$SampleID <- rownames(dadas)
 
-seqtab.nochim <- as.data.frame(rowSums(readRDS("Phyloseq/seqtab_final.simple.RDS")))
+seqtab.nochim <- as.data.frame(rowSums(readRDS("2021-Dec-PacBio/Phyloseq/seqtab_final.simple.RDS")))
 rownames(seqtab.nochim) <- gsub('.filtered.fastq.*', '',rownames(seqtab.nochim))
 seqtab.nochim$SampleID <- rownames(seqtab.nochim)
 
-trimmed <- read.csv("dada2/dada2-FilterAndTrim/all.trimmed.csv")
-rownames(trimmed) <- gsub('.fastq.*', '',trimmed$Sequence)
+trimmed <- read.csv("2021-Dec-PacBio/dada2/dada2-FilterAndTrim/all.trimmed.csv")
+rownames(trimmed) <- gsub('.noprimer.fastq.*', '',trimmed$Sequence)
 trimmed$SampleID <- rownames(trimmed)
 
 track <- Reduce(function(...) merge(..., by = "SampleID",  all.x=TRUE),  list(trimmed, dadas, seqtab.nochim))
@@ -353,7 +359,7 @@ There is an abnormally huge amount of diversity present in the raw composition p
 table(tax_table(physeq.pacbio)[,'Domain'])
 ```
 
-Everything is classified as Bacteria, except for 4 archae and 4 Unclassified.
+Everything is classified as Bacteria.
 
 
 # Sample and Taxa Filtering
@@ -389,8 +395,8 @@ colnames(ranks) <- c("Perc.Unclassified")
 ranks %>% kable
 ```
 
-First analysis: Classification looks pretty good. Almost everything is classified up to the "Order" level.
-Current analysis: Classification isn't as good, but it is decent.
+PacBio: Very good assignment through Genus. Species-level is about 53% unknown. 
+Shoreline: Better species-level assignment at ~25% unknown. However, this is misleading because shoreline had 730 less ASVs so the percentages could be off for that reason.
 
 How many are unclassified at Domain level?
 
@@ -398,27 +404,28 @@ How many are unclassified at Domain level?
 table(tax_table(physeq.pacbio)[,'Domain']) %>% kable
 ```
 
-Four
+None
 
 ```{r}
-unasn <- subset_taxa(physeq.pacbio, Domain == "Unclassified")
-unasn
+#unasn <- subset_taxa(physeq.pacbio, Domain == "Unclassified")
+#unasn
 ```
 
 
 ```{r}
-dir.create(file.path('..', 'results', 'sequences'), showWarnings = FALSE, recursive = TRUE)
-writeXStringSet(refseq(unasn), 
-                filepath = '../results/sequences/unassigned.fna', 
-                format = 'fasta')
+#dir.create(file.path('..', 'results', 'sequences'), showWarnings = FALSE, recursive = TRUE)
+#writeXStringSet(refseq(unasn), 
+#                filepath = '../results/sequences/unassigned.fna', 
+#                format = 'fasta')
 ```
 
 Subset those sequences that have assignments at least at the Phylum level.
 
 ```{r }
-physeq.pacbio <- subset_taxa(physeq.pacbio, !(Phylum == 'Unclassified'))
-physeq.pacbio
+#physeq.pacbio <- subset_taxa(physeq.pacbio, !(Phylum == 'Unclassified'))
+#physeq.pacbio
 ```
+
 
 ### Eukaryotic sequences
 
@@ -463,11 +470,12 @@ Any mitochondrial sequences?
 table(tax_table(physeq.pacbio)[,'Family'])['Mitochondria']
 ```
 
-65 are found. (None were found in 1st analysis, so this is surprising)
+PacBio: None
+Shoreline: 65
 
 ```{r }
- mitos <- subset_taxa(physeq.pacbio, Family == 'Mitochondria')
- sample_sums(mitos) %>% magrittr::extract(. > 0)
+# mitos <- subset_taxa(physeq.pacbio, Family == 'Mitochondria')
+# sample_sums(mitos) %>% magrittr::extract(. > 0)
 ```
 
 
@@ -478,11 +486,46 @@ For the final filtered data, we will remove the chloroplast and mitochondria tax
 # physeq.filtered <- subset_samples(physeq.pacbio, Treatment != 'Control')
 
 # remove mitochondria
- physeq.filtered <- subset_taxa(physeq.pacbio, Family != 'Mitochondria')
+# physeq.filtered <- subset_taxa(physeq.pacbio, Family != 'Mitochondria')
 
 # remove chloroplast
-physeq.filtered <- subset_taxa(physeq.filtered, Order != 'Chloroplast')
+physeq.filtered <- subset_taxa(physeq.pacbio, Order != 'Chloroplast')
 
+physeq.filtered
+```
+1802 ASVs left
+
+
+## Other contaminants?
+
+We won't run this yet but we can remove biological contaminants here. 
+
+## Prune low count samples
+
+Before removing samples, we can see the spread of counts per sample here.
+
+```{r}
+hist(sample_sums(physeq.filtered), breaks = 50)
+```
+Some are quite low in sequences, but the numbers are different compared to the Shoreline pipeline. I will change the cutoff to 1500 just to get rid of the "unknown sample" which I assume is not useful.
+
+Which are less than 1500 sequences?
+
+```{r}
+lowcount <- subset_samples(physeq.filtered, sample_sums(physeq.filtered) < 1500)
+sample_sums(lowcount) %>% magrittr::extract(. < 1500)
+```
+
+PacBio: 3 samples are less than 1000. 9 are less than 5000.
+Shoreline: 4 samples are less than 1000. 11 are less than 5000.
+
+## Prune out samples
+
+Removing the 4 samples identified above (this is one more than the first analysis)
+
+```{r }
+physeq.filt.5000 <- prune_samples(sample_sums(physeq.filtered) > 5000, physeq.filtered) # for testing 
+physeq.filtered <- prune_samples(sample_sums(physeq.filtered) > 1500, physeq.filtered)
 physeq.filtered
 ```
 
@@ -494,13 +537,15 @@ Do we need to filter out any taxa with 0 counts?  Let's check how many have taxo
 table(taxa_sums(physeq.filtered) == 0)
 ```
 
-There are no taxa with 0 counts. So skipping the following.
+There are 5 taxa with 0 counts.
 
 
 ```{r }
-#physeq.filtered <- prune_taxa(taxa_sums(physeq.filtered) > 0, physeq.filtered)
-#physeq.filtered
+physeq.filtered <- prune_taxa(taxa_sums(physeq.filtered) > 0, physeq.filtered)
+physeq.filtered
 ```
+1797 left
+
 
 How about the number of samples who have 0 counts?
 
@@ -520,79 +565,6 @@ No samples with zero counts after filtering in the above steps. No filtering nee
 # physeq.filtered
 ```
 
-## Other contaminants?
-
-We won't run this yet but we can remove biological contaminants here. 
-
-```{r }
-# These steps use the decontam library
-
-# df.contam <- as.data.frame(sample_data(physeq.filtered))
-# df.contam$LibrarySize <- sample_sums(physeq.filtered)
-
-# sample_data(physeq.filtered)$is.neg <- sample_data(physeq.filtered)$Control == "Negative"
-# contamdf.prev <- isContaminant(physeq.filtered, 
-#                                method = "prevalence", 
-#                                neg = "is.neg", 
-#                                threshold = 0.1)
-# 
-# table(contamdf.prev$contaminant)
-```
-
-<!-- Which ones are contaminants? -->
-
-```{r }
-# which(contamdf.prev$contaminant)
-```
-
-<!-- Based on the threshold we are seeing some contaminants showing up; how prevalent are they in the overall samples? -->
-
-```{r }
-# ps.neg <- prune_samples(
-#   sample_data(physeq.filtered)$Control == "Negative", physeq.filtered)
-# ps.neg.presence <- transform_sample_counts(ps.neg, function(abund) 1*(abund > 0))
-# 
-# ps.pos <- prune_samples(
-#   sample_data(physeq.filtered)$Control == "Sample", physeq.filtered)
-# ps.pos.presence <- transform_sample_counts(ps.pos, function(abund) 1*(abund > 0))
-# 
-# df.pres <- data.frame(
-#   prevalence.pos = taxa_sums(ps.pos.presence), 
-#   prevalence.neg = taxa_sums(ps.neg.presence),
-#   contam.prev = contamdf.prev$contaminant)
-# 
-# ggplot(data = df.pres, aes(x=prevalence.neg, y=prevalence.pos, color=contam.prev)) + 
-#   geom_point()
-```
-
-```{r }
-# physeq.filtered <- prune_taxa(!contamdf.prev$contaminant, physeq.filtered)
-# physeq.filtered
-```
-
-## Prune low count samples
-
-Before removing samples, we can see the spread of counts per sample here.
-
-```{r}
-hist(sample_sums(physeq.filtered), breaks = 50)
-```
-
-Which are less than 50 sequences?
-
-```{r}
-lowcount <- subset_samples(physeq.filtered, sample_sums(physeq.filtered) < 50)
-sample_sums(lowcount) %>% magrittr::extract(. < 50)
-```
-
-## Prune out samples
-
-Removing the three samples identified above (this is one more than the first analysis)
-
-```{r }
-physeq.filtered <- prune_samples(sample_sums(physeq.filtered) > 50, physeq.filtered)
-physeq.filtered
-```
 
 # Basic overview
 
@@ -631,6 +603,10 @@ plot_tree(ex0, label.tips = 'Genus',
           )
 ```
 
+PacBio: Complete opposite of shoreline pipeline results.
+Shoreline: Interestingly, the majority of the top 50 taxa are not shared between the different tissue types or samples! No wonder the downstream analyses look weird.
+
+
 # Alpha rarefaction
 
 Let's check whether we're adequately capturing diversity.  This is a simple alpha rarefaction curve; here we want to see the number of taxa plateau as the counts increase.
@@ -645,15 +621,15 @@ p <- suppressMessages(ranacapa::ggrare(physeq.filtered, step = 50,
 ```
 
 ```{r}
-p + ggtitle("Alpha Rarefaction") + coord_cartesian(xlim=c(0,150000), ylim=c(0,200))
+p + ggtitle("Alpha Rarefaction") + coord_cartesian(xlim=c(0,125000), ylim=c(0,500))
 ```
 
-1st analysis: No obvious trends between location of samples. For most samples, it appears as though all the diversity is captured, with the exception of RMB_VIN_BAL_RCr and the 4 samples with less than 5000 sequences. In addition, RMB_VIN_NPL, has an abnormally high alpha diversity score compared to the rest of the samples.
-Current analysis: all lines plateau for all samples very quickly. Species richness seems to be lower than the 1st analysis. RMB_AMB_BAL_LCd has the highest species diversity.
+PacBio: No obvious trends between location of samples. For most samples, it appears as though all the diversity is captured, with the exception of RMB_VIN_BAL_RCr and the 4 samples with less than 5000 sequences. In addition, RMB_VIN_NPL, has an abnormally high alpha diversity score compared to the rest of the samples.
+Shoreline: all lines plateau for all samples very quickly. Species richness seems to be lower than the 1st analysis. RMB_AMB_BAL_LCd has the highest species diversity.
 
 
 ```{r}
-p <- p + ggtitle("Alpha Rarefaction by Location") + coord_cartesian(xlim=c(0,125000), ylim=c(0,200)) + facet_wrap(~Location) 
+p <- p + ggtitle("Alpha Rarefaction by Location") + coord_cartesian(xlim=c(0,125000), ylim=c(0,500)) + facet_wrap(~Location) 
 
 p
 #ggsave("alpha-rarefaction-byLocation.pdf", path = "results/final-plots", device = pdf, width = 7.5, height = 5, units = "in")
@@ -661,11 +637,11 @@ p
 
 # Composition plots on filtered data
 
-Here we will post a few plots for an overall compositional summary (stacked bar plots).  In this example here are the top 15 families by composition per sample, split by treatment. 
+Here we will post a few plots for an overall compositional summary (stacked bar plots).  In this example it illustrates all ASVs, split by Location.
 
 ```{r }
 #Phyloseq bar plot
-p <- plot_bar(physeq.pacbio, x="SampleID", fill="Class")
+p <- plot_bar(physeq.filtered, x="SampleID", fill="Class")
 p + theme(legend.key.size = unit(0.25, 'cm'), #change legend key size
         legend.title = element_text(size=8), #change legend title font size
         legend.text = element_text(size=8),
@@ -681,7 +657,7 @@ p + theme(legend.key.size = unit(0.25, 'cm'), #change legend key size
 #p + facet_wrap(~Location, scales = "free_x", nrow = 1)
 ```
 
-It's hard to tell by eye, since there are so many species
+It's hard to tell by eye, since there are so many species in a few of the samples. RCd an RCr are very low.
 
 ```{r}
 #p + facet_wrap(~Tissue, scales = "free_x", nrow = 1)
@@ -693,7 +669,7 @@ Check alpha diversity stats.  Note we haven't performed any additional filtering
 
 > You must use untrimmed, non-normalized count data for meaningful results, as many of these estimates are highly dependent on the number of singletons. You can always trim the data later on if needed, just not before using this function.
 
-## Overall
+## Overall alpha diversity measures
 
 ```{r}
 # all six measures: Observed, Chao1, ACE, Shannon, Simpson, Inv. Simpson, Fisher
@@ -837,100 +813,182 @@ plot_richness_estimates = function(physeq,
 
 ```
 
-```{r}
-sample_data(physeq.filtered)$Simple_Type <- sample_data(physeq.filtered)$Sample_Type
-levels(sample_data(physeq.filtered)$Simple_Type) <- c("NPL-TTA","NPL-TTA","BAL")
+
+### Plot to check normality
+
+Do these look like a normal distribution? If p is \< 0.05, then it is not normally distributed and non-parametric tests should be used instead (such as the Wilcoxen-rank sum test).
+
+```{r }
+par(mfrow = c(2, 3))
+
+plots <- lapply(c('Chao1', 'Shannon', 'Simpson', 'InvSimpson', 'Observed', 'PD'), 
+       function(x) {
+         shap <- shapiro.test(erDF[,x])
+         hist(erDF[,x], xlab = "Measure", main=paste0(x, "\nShapiro pvalue=", label_number(accuracy = 0.0001)(shap$p.value)), breaks=15)
+         })
 ```
+PacBio: Distributions look more standard. All are skewed to the left, except for Shannon which looks normally distributed.
+Shoreline: Distributions are weird. Nothing looks normally distributed, except maybe Shannon. Will use non-parametric testing methods.
+
+# 10/6/2023 Update
+ Report Chao1, Simpson & PD only since they are all non-parametric
+ Compare BAL locations (LCd, LCr, LD, RCd, RCr, RD) only
+
 
 ```{r}
 p <- plot_richness_estimates(physeq = physeq.filtered, 
-                             erDF = erDF, # PD
+                             erDF = erDF[c(2,7,9)], # PD
                              "Simple_Type", 
                              color = "Simple_Type", 
-                             title="Alpha diversity in different treatment groups")
+                             title="Alpha diversity for BAL vs (NPL+TTA)")
 
 p + geom_boxplot(aes(x=Simple_Type, 
                      y=value,
                      color=NULL), alpha=0.1) +
   stat_compare_means(label = "p.signif",
-                     ref.group = "BAL",
+                    # ref.group = "BAL",
                      hide.ns = TRUE,
                      method = "wilcox.test") +
   ylab("Faith PD") + 
   #scale_x_discrete(labels=labels) + 
   theme(legend.position = "none")
 
-ggsave("all-alpha-metrics-bySimpleType.pdf", path = "results/alpha-and-taxa-plots/", device = "pdf", width = 7, height = 5, units = "in")
+ggsave("3-alpha-metrics-bySimpleType.pdf", path = "results/final-plots/", device = "pdf", width = 6, height = 5, units = "in")
 ```
-Nothing is significant for PD
+PacBio: Chao1 & PD are significant and others
+Shoreline: Nothing is significant
 
-
-All alpha diversity metrics by Location:
+# Write out numbers
 ```{r}
-p <- plot_richness_estimates(physeq = physeq.filtered, 
-                             erDF = erDF, # all metrics
-                             "Location", 
-                             color = "Location", 
-                             title="Alpha diversity in different treatment groups")
+# Convert plotting data to be used for other things
+data <- ggplot_build(p)
 
-p + geom_boxplot(aes(x=Location, 
-                     y=value, 
-                     color=NULL), alpha=0.1) +
-  stat_compare_means(label = "p.signif",
-                     ref.group = 'NPL',
-                     method = "wilcox.test",
-                     hide.ns = TRUE) +
-  ylab("Alpha diversity score") + 
-  #scale_x_discrete(labels=labels) + 
-  theme(legend.position = "none")
+# run separate test to get p values
+chao1.vals <- compare_means(value ~ Simple_Type, data = data$plot$data[c(1:28),], method = "wilcox.test")
+simpson.vals <- compare_means(value ~ Simple_Type, data = data$plot$data[c(29:56),], method = "wilcox.test")
+pd.vals <- compare_means(value ~ Simple_Type, data = data$plot$data[c(57:84),], method = "wilcox.test")
 
-ggsave("alpha-ALLmetrics-byLocation.pdf", path = "../results/final-plots", device = "pdf", width = 10, height = 5, units = "in")
+# merge tables
+chao1.vals$metric <- "Chao1"
+simpson.vals$metric <- "Simpson"
+pd.vals$metric <- "Faith PD"
+pre.final <- merge(chao1.vals, simpson.vals, all = TRUE)
+final.vals <- merge(pre.final, pd.vals, all = TRUE)
+
+#write out the tables
+write.table(data$plot$data, file = "results/alpha-and-taxa-plots/bal_vs_npl-tta_raw_alpha_values.csv", sep =",", row.names = FALSE)
+write.table(final.vals, file = "results/alpha-and-taxa-plots/bal_vs_npl-tta_Wilcoxon_p-values.csv", sep =",", row.names = FALSE)
 ```
-No significance across any of the metrics when compared to NPL. I'm not sure what the proper control would be in this case, if any, but I also tried comparing to TTA and there was no significance.
+
 
 All alpha diversity metrics by Sample_Type:
 ```{r}
 p <- plot_richness_estimates(physeq = physeq.filtered, 
-                             erDF = erDF, # all metrics
+                             erDF = erDF[c(2,7,9)], # all metrics
                              "Sample_Type", 
                              color = "Sample_Type", 
-                             title="Alpha diversity in different treatment groups")
+                             title="Alpha diversity by Sample Type")
 
 p + geom_boxplot(aes(x=Sample_Type, 
                      y=value, 
                      color=NULL), alpha=0.1) +
   stat_compare_means(label = "p.signif",
-                     ref.group = 'NPL',
+                   #  ref.group = 'NPL',
                      method = "wilcox.test",
                      hide.ns = TRUE) +
   ylab("Alpha diversity score") + 
   #scale_x_discrete(labels=labels) + 
   theme(legend.position = "none")
 
-#ggsave("alpha-ALLmetrics-bySample_Type.pdf", path = "results/final-plots", device = "pdf", width = 10, height = 5, units = "in")
+ggsave("3-alpha-metrics-bySample_Type.pdf", path = "results/final-plots", device = "pdf", width = 6, height = 5, units = "in")
 ```
-1st analysis: For Faith_PD only, BAL is significant when NPL is the reference.
-Current analysis: nothing is significant
+PacBio: Significant for Faith_PD and Chao1 (This one wasn't significant before, but may be now that I was more stringent with removing low sequence (< 1500) samples)
+Shoreline: nothing is significant
 
+```{r}
+# Convert plotting data to be used for other things
+data <- ggplot_build(p)
 
-## Check for normal distribution 
+# run separate test to get p values
+chao1.vals <- compare_means(value ~ Sample_Type, data = data$plot$data[c(1:28),], method = "wilcox.test")
+simpson.vals <- compare_means(value ~ Sample_Type, data = data$plot$data[c(29:56),], method = "wilcox.test")
+pd.vals <- compare_means(value ~ Sample_Type, data = data$plot$data[c(57:84),], method = "wilcox.test")
 
-### Plot to check normality
+# merge tables
+chao1.vals$metric <- "Chao1"
+simpson.vals$metric <- "Simpson"
+pd.vals$metric <- "Faith PD"
+pre.final <- merge(chao1.vals, simpson.vals, all = TRUE)
+final.vals <- merge(pre.final, pd.vals, all = TRUE)
 
-Do these look like a normal distribution?
-
-```{r }
-library(scales)
-par(mfrow = c(2, 3))
-
-lapply(c('Chao1', 'Shannon', 'Simpson', 'InvSimpson', 'Observed', 'PD'), 
-       function(x) {
-         shap <- shapiro.test(erDF[,x])
-         hist(erDF[,x], xlab = "Measure", main=paste0(x, "\nShapiro pvalue=", label_number(accuracy = 0.0001)(shap$p.value)), breaks=15)
-         })
+#write out the tables
+write.table(data$plot$data, file = "results/alpha-and-taxa-plots/bal_vs_npl_vs_tta_raw_alpha_values.csv", sep =",", row.names = FALSE)
+write.table(final.vals, file = "results/alpha-and-taxa-plots/bal_vs_npl_vs_tta_Wilcoxon_p-values.csv", sep =",", row.names = FALSE)
 ```
 
-All of these except for Shannon, look skewed and do not pass the Shapiro-Wilk test for normality. This means, we should be using non-parametric tests. The Wilcoxen Rank sum test used above, is non-parametric.
+
+
+# Remove TTA & NPL samples
+```{r}
+physeq.bal <- prune_samples(sample_data(physeq.filtered)$Simple_Type == "BAL", physeq.filtered)
+```
+
+```{r}
+# all six measures: Observed, Chao1, ACE, Shannon, Simpson, Inv. Simpson, Fisher
+erDF <- estimate_richness(physeq.bal, measures = c("Observed", "Chao1", "ACE", "Shannon", "Simpson", "InvSimpson"))
+
+# add Faith's PD, this is a simple wrapper to format everything correctly
+pd <- estimate_pd(physeq.bal)
+
+# we don't need SR, it's the same as observed
+erDF$PD <- pd$PD
+
+measures <- colnames(erDF)
+```
+
+```{r}
+p <- plot_richness_estimates(physeq = physeq.bal, 
+                             erDF = erDF[c(2,7,9)], # all metrics
+                             "Location", 
+                             color = "Location", 
+                             title="Alpha diversity in different BAL locations")
+
+p + geom_boxplot(aes(x=Location, 
+                     y=value, 
+                     color=NULL), alpha=0.1) +
+  stat_compare_means(label = "p.signif",
+                     method = "wilcox.test",
+                     hide.ns = TRUE) +
+  ylab("Alpha diversity score") + 
+  #scale_x_discrete(labels=labels) + 
+  theme(legend.position = "none")
+
+
+ggsave("-alpha-metrics-by-BAL-location.pdf", path = "results/final-plots", device = "pdf", width = 6, height = 5, units = "in")
+```
+
+# Extract p-values
+
+```{r}
+# Convert plotting data to be used for other things
+data.bal <- ggplot_build(p)
+
+# run separate test to get p values
+chao1.vals <- compare_means(value ~ Location, data = data.bal$plot$data[c(1:28),], method = "wilcox.test")
+simpson.vals <- compare_means(value ~ Location, data = data.bal$plot$data[c(29:56),], method = "wilcox.test")
+pd.vals <- compare_means(value ~ Location, data = data.bal$plot$data[c(57:84),], method = "wilcox.test")
+
+# merge tables
+chao1.vals$metric <- "Chao1"
+simpson.vals$metric <- "Simpson"
+pd.vals$metric <- "Faith PD"
+pre.final <- merge(chao1.vals, simpson.vals, all = TRUE)
+final.vals <- merge(pre.final, pd.vals, all = TRUE)
+
+#write out the tables
+write.table(data.bal$plot$data, file = "results/alpha-and-taxa-plots/bal-locations_raw_alpha_values.csv",sep = ",", row.names = FALSE)
+write.table(final.vals, file = "results/alpha-and-taxa-plots/bal-locations_Wilcoxon_p-values.csv",sep = ",", row.names = FALSE)
+```
 
 # Save point
 ```{r }
@@ -944,8 +1002,13 @@ NOTE: The PrevalenceFiltering.Rmd script was run at this point.
 ## Load Prevalence filtering results.
 
 ```{r}
-physeq.prev <- readRDS("./results/PrevalenceFiltering/phyloseq.prevfiltered.RDS")
+getwd()
+physeq.prev <- readRDS("results/PrevalenceFiltering/phyloseq.prevfiltered.RDS")
+#physeq.prev.15 <- readRDS("results/PrevalenceFiltering/phyloseq.prevfiltered.15.RDS") # for testing
+physeq.prev
 ```
+
+UPDATE: I tested the Beta diversity results tip glom cutoffs of 0.1, 0.15, and 0.2 and the later two seemed fairly equivalent with 0.15 having a slight edge. 0.1 likely resulted in too much sequence loss and the groupings were not as strong. 
 
 # Basic composition plot on agglomerated data
 
@@ -954,48 +1017,214 @@ p <- plot_bar(physeq.prev, x="Horse", fill="Order")
 p + theme(legend.key.size = unit(0.2, 'cm'), #change legend key size
         legend.title = element_text(size=8), #change legend title font size
         legend.text = element_text(size=8, face="italic")) +
+  guides(fill = guide_legend(nrow = 30)) +
   facet_wrap(~Location, scales = "free_x")
 
-ggsave("filtered-taxonomy-bar-plot_Order-level_byLocation.pdf",path="./results/alpha-and-taxa-plots//", height = 8, width = 8, device="pdf")
-
-#p <- phyloseq.extended::plot_composition(physeq.prev,
-#                      numberOfTaxa = 15,
-#                      taxaSet1 = NULL,
-#                      fill = "Family",
-#                      x = "SampleID")
-#p1 <- p + facet_wrap(~Treatment, scales = "free_x", nrow = 1)
-#p1
+ggsave("filtered-taxonomy-bar-plot_Order-level_byLocation.pdf",path="results/alpha-and-taxa-plots//", height = 8, width = 9, device="pdf")
 ```
 
 
-# Relative abundance tables
+
+# Abundance tables grouped by simple type
 
 ```{r }
-p <- plot_bar(physeq.test, x="SampleID", fill="Family")
+p <- plot_bar(physeq.prev, x="SampleID", fill="Family")
 p + theme(legend.key.size = unit(0.2, 'cm'), #change legend key size
         legend.title = element_text(size=8), #change legend title font size
         legend.text = element_text(size=8, face="italic")) +
+  guides(fill = guide_legend(nrow = 30)) +
   facet_wrap(~Simple_Type, scales = "free_x")
 
-ggsave("relative-abund-taxonomy-bar-plot_Family-level_bySimpleType.pdf",path="./results/alpha-and-taxa-plots/", height = 8, width = 8, device="pdf")
+ggsave("filtered-taxonomy-bar-plot_Family-level_bySimpleType.pdf",path="results/alpha-and-taxa-plots/", height = 8, width = 10, device="pdf")
 ```
+
+
 
 # Beta diversity
 
 Initial beta diversity calculation. Bray Curtis metric used for calculating compositional/beta diversity scores, and NMDS ordination used for ordering samples and taxa. These settings are generally recommended for microbial datasets that include many null values. 
 
+# Bray curtis heatmap
 ```{r }
 p <- plot_heatmap(physeq.prev,
-                  method = "NMDS",
+                  method = "PCoA",
                   distance = "bray",
                   taxa.label = "Family",
                   sample.label = "Location",
+                #  sample.order = "Location",
                   trans = log_trans(2))
 p
 ```
-1st analysis: The NPL samples naturally group somewhat well together, but no other obvious groupings.
-Current analysis: Groupings seem mostly random. 
+PacBio: The NPL samples naturally group well together with higher tip aglom methods, but with 0.1 it's more rough
+Shoreline: Groupings seem mostly random. 
 
+# Weighted Unifrac heatmap
+```{r }
+p <- plot_heatmap(physeq.prev,
+                  method = "PCoA",
+                  distance = "wunifrac",
+                  taxa.label = "Family",
+                  sample.label = "Location",
+               #   sample.order = "Location",
+                  trans = log_trans(2))
+p
+```
+
+Groupings aren't quite as good.
+
+
+
+
+# Relative abundance tables
+
+```{r}
+library(microViz)
+#Get relative abundance
+physeq.prev.prop <- transform_sample_counts(physeq.prev, function(x) x/sum(x) )
+sample_data(physeq.prev.prop)$SampleSums <- sample_sums(physeq.prev)
+
+physeq.prev.prop <- physeq.prev.prop %>% tax_fix(unknowns = c("Unclassified"," unidentified"," uncultured", " uncultured_bacterium", " uncultured_prokaryote", " unidentified_eubacterium"))
+
+physeq.plot <- physeq.prev.prop
+```
+
+Overall compositional summary (stacked bar plots) for all prevalence filtered and tip agglomerated samples.  In this example, just the top 20 taxa are included for each taxonomical ranking. I recommend the top 20 over the top 10 simply because there is a large family that only shows up in a couple samples.
+
+```{r, results='asis', fig.keep='all', message = FALSE, warning = FALSE, echo = FALSE}
+ranks <- c("Phylum", "Class", "Order", "Family", "Genus", "Species")
+plots <- lapply(ranks, function (x) { 
+
+
+  #Plot relative abundance
+  p <- comp_barplot(physeq.plot, x, n_taxa = 20, facet_by = "Location",  label = "Horse", palette = dittoSeq::dittoColors())
+  p1 <- p + theme(legend.key.size = unit(0.25, 'cm'), #change legend key size
+        legend.title = element_text(size=6), #change legend title font size
+        legend.text = element_text(size=6),
+        axis.title.x=element_blank(),
+       # axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(size = 6, angle = 90, #Needed for labels
+                                  hjust = 1, vjust = 1,
+                                   face = "bold")) +
+        ylab("Relative Abundance") +
+        guides(fill = guide_legend(nrow = 30))
+      #  facet_grid(.~trt, scales = "free_x", space = "free_x")
+
+ p1
+ f1 <- paste("results/final-plots/taxa-bar-plots/taxa-rank-" , x , "_barplot_top20_splitby_Location.pdf", sep = "")
+ ggsave(f1, device = "pdf")
+ #, width = 14, height = 8, device = "pdf"
+})
+```
+
+
+
+# Relative abundance tables (grouped by Sample_Type)
+
+Let's try grouping the data by Sample_Type (averaging the ASV counts per Sample_Type group) and then re-plotting the composition bar plots. Here, the first 20 taxa are shown in each plot and the rest are categorized into the "Other" category.
+
+```{r, warning=FALSE}
+# install.packages(
+#   "microViz",
+#   repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+# )
+#library(microViz)
+
+#Get relative abundance
+physeq.prev1 <- merge_samples(physeq.prev, "Sample_Type")
+physeq.prev.prop <- transform_sample_counts(physeq.prev1, function(x) x/sum(x) )
+sample_data(physeq.prev.prop)$SampleSums <- sample_sums(physeq.prev1)
+physeq.plot <- physeq.prev.prop
+physeq.plot <- physeq.plot %>% tax_fix(unknowns = c("Unclassified"," unidentified"," uncultured", " uncultured_bacterium", " uncultured_prokaryote", " unidentified_eubacterium"))
+```
+
+
+
+```{r, results='asis', fig.keep='all', message = FALSE, warning = FALSE, echo = FALSE}
+ranks <- c("Phylum","Class", "Order", "Family", "Genus", "Species")
+
+s.order <- c("NPL","TTA","BAL")
+
+plots <- lapply(ranks, function (x) { 
+  
+#Plot relative abundance
+  p <- comp_barplot(physeq.plot, x, n_taxa = 20, palette = dittoSeq::dittoColors(), sample_order = s.order)
+  p1 <- p + theme(legend.key.size = unit(0.25, 'cm'), #change legend key size
+        legend.title = element_text(size=8, face = "bold"), #change legend title font size
+        legend.text = element_text(size=8),
+        axis.title.x=element_blank(),
+        axis.title.y=element_text(size = 10),
+        axis.text.x = element_text(size = 8, angle = 45, 
+                                   hjust = 1, vjust = 1,
+                                   face = "bold")) +
+        ylab("Relative Abundance") +
+        guides(fill = guide_legend(nrow = 30))
+      #  facet_grid(.~trt, scales = "free_x", space = "free_x")
+
+ p1
+ f1 <- paste("results/final-plots/taxa-bar-plots/taxa-rank-" , x , "_barplot_top20_groupedby_Sample_Type.pdf", sep = "")
+ ggsave(f1, device = "pdf")
+})
+
+```
+
+
+
+
+# Genus/Species table
+
+Bishop wanted a table of bacteria present at >= 1% mean relative abundance across all sampling locations. The example she provided only included Phylum, Genus, and Species but I can likely create a loop to do them all and make it easier.
+
+```{r PrevalenceFiltering-23 }
+mean_rel_abund = function(physeq.prev, rank = "Species") {
+
+ GPf = tax_glom(physeq.prev, rank, NArm = F) %>% transform_sample_counts(function(x) {x * 100/sum(x)})
+
+ # The taxa orders are the same in tax_table() and otu_table()
+ # Use 'colMeans(otu_table(GPf))' to calculate per-column average in the OTU table
+ df = data.frame(Family = tax_table(GPf)[,rank], Mean = colMeans(otu_table(GPf)), row.names = NULL)
+ df = df[order(-df$Mean),]
+ return(df)
+}
+```
+
+## Calculate for most rankings
+```{r}
+ranks <- c("Species", "Genus", "Family", "Order","Class", "Phylum")
+plots <- lapply(ranks, function(x) {
+ mra <- mean_rel_abund(physeq.prev, rank = x)
+ fname = paste("results/alpha-and-taxa-plots/tip-glom-0.1-USETHIS/mean-rel-abund_", x, ".txt", sep="")
+ head(mra)
+# write.table(mra, file = fname, row.names = FALSE, sep = "\t")
+})
+```
+
+## Find Genus for one of the species that shows up 
+I manually added this, but should find a better way in the future
+
+```{r}
+GPf = tax_glom(physeq.prev, "Species", NArm = F) %>% transform_sample_counts(function(x) {x * 100/sum(x)})
+spec <- c("acnes","pluranimalium","komagatae","massiliensis", "granulosum","gibsonii")
+
+# Get IDs associated with these species
+id.list <- tax_table(GPf)[,"Species"][tax_table(GPf)[,"Species"] %in% spec]
+
+# Find IDs and list Genus and Species
+tax_table(GPf)[,c("Genus","Species")][row.names(tax_table(GPf)[,"Genus"]) %in% row.names(id.list)]
+# Taxonomy Table:     [6 taxa by 2 taxonomic ranks]:
+#                                  Genus                            Species        
+# 16b87e152205402b86a4bd9441b0dd8f "Streptococcus"                  "pluranimalium"
+# c3ccc2fe465e68b1aac4630f6842a771 "Bacillus"                       "gibsonii"     
+# 6f11f9846208ab9dbac2c4fae030b51e "Ezakiella"                      "massiliensis" 
+# 14a966af281b1b3f92629b6072f235d9 "Cutibacterium"                  "granulosum"   
+# eadc077afa9f76ebf04d47ce187d2ada "Cutibacterium"                  "acnes"        
+# 4755d263be6398b723f4b707f50a92b1 "Methylobacterium-Methylorubrum" "komagatae" 
+```
+
+
+
+
+# PCoA plots
 
 ## Relative proportion
 
@@ -1005,47 +1234,12 @@ Transform data to relative proportions (no prior added).  We may want the option
 #All samples
 physeq.prop <- transform_sample_counts(physeq.prev, function(x) x/sum(x) )
 sample_data(physeq.prop)$SampleSums <- sample_sums(physeq.prev)
+
+# For testing
+physeq.prop.15 <- transform_sample_counts(physeq.prev.15, function(x) x/sum(x) )
+sample_data(physeq.prop.15)$SampleSums <- sample_sums(physeq.prev.15)
 ```
 
-## CLR normalization, McMurdie
-
-Transform data using CLR (from McMurdie (Meth Mol Bio 2018) supplemental package).  
-
-```{r }
-# copy instance and replace raw counts with CLR-normalized counts
-physeq.clr <- phyloseq_CLR(physeq.prev)
-# otu_table(physeq.clr) <- otu_table(as(x, "matrix"), taxa_are_rows = FALSE)
-physeq.clr
-```
-This one didn't work at first. It looks like one of the samples has no counts after prevalence filtering, so I'll remove that, and try again.
-
-```{r }
-physeq.prev <- prune_samples(sample_sums(physeq.prev)>0, physeq.prev)
-#Redo above code as well
-```
-
-
-## CLR normalization, mixOmics
-
-CLR from `mixOmics`.
-
-```{r }
-# get counts
-tmp <- as(otu_table(physeq.prev),"matrix")
-
-tmp <- tmp
-
-# transpose if needed
-if(!taxa_are_rows(physeq.prev)) { tmp <- t(tmp)}
-
-x <- logratio.transfo(tmp, logratio = 'CLR', offset = 1)
-
-# copy instance and replace raw counts with CLR-normalized counts
-physeq.clr2 <- physeq.prev
-otu_table(physeq.clr2) <- otu_table(as(x, "matrix"), taxa_are_rows = TRUE)
-physeq.clr2
-```
-This one worked okay
 
 ## Set active instance
 
@@ -1053,28 +1247,48 @@ Set the active normalization type (Prop for now)
 
 ```{r}
 physeq.active <- physeq.prop
-#physeq.active <- physeq.clr
-#physeq.active <- physeq.clr2
 ```
 
 
+
+# Plotting
+
 ```{r }
-finalPhyseq.ord <- ordinate(physeq.active, "NMDS", "bray")
+finalPhyseq.ord <- ordinate(physeq.active, "PCoA", "bray")
 p1 = plot_ordination(physeq.active,
                      finalPhyseq.ord,
                      type="samples",
                      color="Sample_Type",
-                     label = "Horse",
+                     label = "Location",
                      title="Samples") + geom_point(size = 2.5)
-p1 + ggtitle("NMDS plot of Bray Curtis distances") 
+p1 + ggtitle("PCoA plot of Bray Curtis distances") 
 
-ggsave("NMDS_BrayCurtis_bySample_Type.pdf",path="./results/final-plots", device="pdf")
+ggsave("PCoA_BrayCurtis_bySample_Type.pdf",path="results/final-plots", device="pdf")
 ```
 
-physeq.prop: RCr groups pretty well. Everything else groups somewhat. There tends to be an outlier in each grouping.
-physeq.clr: Didn't work because of infinite or missing values.
-physeq.clr2: This one has all the data points stacked on top of one another.
+physeq.prop: Sample_Type groups go together pretty well, but the BAL ones do seem to be grouping into 3 groups that aren't associated with any of the metadata that I have.
 
+```{r}
+p1 + facet_wrap(~Location)
+```
+
+
+```{r }
+finalPhyseq.ord <- ordinate(physeq.prop.1, "PCoA", "wunifrac")
+p1 = plot_ordination(physeq.prop.1,
+                     finalPhyseq.ord,
+                     type="samples",
+                     color="Sample_Type",
+                     label = "Location",
+                     title="Samples") + geom_point(size = 2.5)
+p1 + ggtitle("PCoA plot of Bray Curtis distances") 
+
+ggsave("PCoA_WeightedUnifrac_bySample_Type.pdf",path="results/final-plots", device="pdf")
+```
+
+```{r}
+p1 + facet_wrap(~Location)
+```
 
 Does starting number of sequences affect groupings?
 ```{r }
@@ -1086,36 +1300,6 @@ p1 <- plot_ordination(physeq.active,
                      title="Samples")
 p1
 ```
-
-Nothing odd here. Let's look at Weighted UniFrac
-
-```{r}
-finalPhyseq.ord <- ordinate(physeq.active, "PCoA", "wunifrac")
-p1 = plot_ordination(physeq.active,
-                     finalPhyseq.ord,
-                     type="samples",
-                     color="Location",
-                   #  axes = c(1,2),
-                     label = "Horse",
-                     title="Samples") + geom_point(size=3)
-
-p1 + ggtitle("PCoA plot of Weighted Unifrac distances") 
-
-ggsave("PCoA_WeightedUnifrac_byLocation.pdf",path="./results/final-plots", device="pdf")
-```
-
-```{r}
-p1 + facet_wrap(~Location)
-```
-
-physeq.prop: TTA, RD, and NPL group pretty decently
-physeq.clr2: N/A
-
-```{r}
-p1 + facet_wrap(~Sample_Type)
-```
-
-physeq.prop: From this view, all of the groupings seem to be splitting at the y-axis around 0. None of the metadata fits this pattern, so I'm not sure what it could be.
 
 
 
@@ -1134,31 +1318,43 @@ finalPhyseq.prop.dist.bc <- phyloseq::distance(physeq.active, method = "wunifrac
 ```{r}
 adonis2(finalPhyseq.prop.dist.bc ~ Location,
        data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
 ```
 physeq.prop: Location is not significant.
 physeq.clr2: ""
 
 ```{r}
 adonis2(finalPhyseq.prop.dist.bc ~ Sample_Type ,
-       data = finalPhyseq.meta)
+       data = finalPhyseq.meta) 
+       #, strata = finalPhyseq.meta$Horse)
 ```
 
-physeq.prop: Sample_Type is not significant.
+physeq.prop: Sample_Type is almost Significant
 physeq.clr2: ""
 
 ```{r}
 adonis2(finalPhyseq.prop.dist.bc ~ Sex ,
        data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
 ```
-physeq.prop: Breed is not significant.
+physeq.prop: Sex is not significant.
 physeq.clr2: ""
+
+Simple Type:
+```{r}
+adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type,
+       data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
+```
+Simple_Type is significant.
 
 More complex model:
 ```{r}
-adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type*Breed,
-       data = finalPhyseq.meta)
+adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type * Horse ,
+       data = finalPhyseq.meta) 
+       #, strata = finalPhyseq.meta$Horse)
 ```
-Still nothing significant in a more complex model.
+
 
 Next we check for significance in differences between group dispersion. Ideally, these tests won't be significant.
 
@@ -1169,13 +1365,12 @@ beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Sample_Type)
 permutest(beta)
 beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Sex)
 permutest(beta)
-beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Breed)
-permutest(beta)
+
 ```
 
 
 physeq.prop: Good! This suggests that any issues with heteroscedasticity aren't likely to be significant.
-physeq.clr2: ""
+
 
 
 ```{r }
@@ -1193,39 +1388,32 @@ finalPhyseq.prop.dist.bc <- phyloseq::distance(physeq.active, method = "bray")
 ```{r}
 adonis2(finalPhyseq.prop.dist.bc ~ Location,
        data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
 ```
 physeq.prop: Location is not significant.
 physeq.clr2: ""
 
 ```{r}
+adonis2(finalPhyseq.prop.dist.bc ~ Sample_Type ,
+       data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
+```
+
+```{r}
 adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type ,
        data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
 ```
 
 physeq.prop: Sample_Type is better, but still not significant.
-physeq.clr2: ""
 
+Complex models:
 ```{r}
-adonis2(finalPhyseq.prop.dist.bc ~ Breed ,
+adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type * Horse ,
        data = finalPhyseq.meta)
+       #, strata = finalPhyseq.meta$Horse)
 ```
-physeq.prop: Breed is significant.
-physeq.clr2: Breed is not significant.
 
-```{r}
-adonis2(finalPhyseq.prop.dist.bc ~ Horse ,
-       data = finalPhyseq.meta)
-```
-physeq.prop: Horse is significant at 0.1
-physeq.clr2: Horse is not significant.
-
-More complex model:
-```{r}
-adonis2(finalPhyseq.prop.dist.bc ~ Breed*Simple_Type,
-       data = finalPhyseq.meta)
-```
-physeq.prop: In a more complex model, Breed is significant, but Sample_Type still is not.
-physe.clr2: Not significant.
 
 Next we check for significance in differences between group dispersion.
 
@@ -1236,129 +1424,17 @@ beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Location)
 permutest(beta)
 beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Sex)
 permutest(beta)
-beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Breed)
-permutest(beta)
 ```
 physeq.prop: Nothing is heteroscedastic.
-physeq.clr2: Nothing is heterscedastic, but there was a warning earlier that PERMANOVA results may not be trustworthy since negative values were included. No surprise.
+
 
 ```{r }
 plot(beta, main = "Bray Curtis Beta diversity PCoA by Location")
 ```
 It seems clear that BAL differs from NPL and TTA in this PCoA plot. I'm going to try adding in another variable of BAL versus NPL+TTA and see if that is significant.
 
-## Test significance for for BAL versus NPL+TTA
-
-Add new variable to physeq.prop
-```{r}
-physeq.test <- physeq.prop
-sample_data(physeq.test)$Simple_Type <- sample_data(physeq.test)$Sample_Type
-levels(sample_data(physeq.test)$Simple_Type) <- c("NPL-TTA","NPL-TTA","BAL")
-```
-
-## Try Bray Curtis metric (non-phylogenetic)
-```{r }
-set.seed(12345)
-finalPhyseq.meta <- as(sample_data(physeq.test), "data.frame")
-finalPhyseq.prop.dist.bc <- phyloseq::distance(physeq.test, method = "bray")
-```
-
-
-```{r}
-adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type,
-       data = finalPhyseq.meta)
-```
-My new variable, Simple_Type, is highly significant. Let's test for heteroscedacity
-
-```{r}
-beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Simple_Type)
-permutest(beta)
-```
-It's not heteroscedastic, so that's great.
-
-```{r }
-plot(beta, main = "Bray Curtis Beta diversity PCoA by DFM presence/absence")
-```
-Let's try it for Weighted Unifrac as well.
-
-```{r }
-set.seed(12345)
-finalPhyseq.meta <- as(sample_data(physeq.test), "data.frame")
-finalPhyseq.prop.dist.bc <- phyloseq::distance(physeq.test, method = "wunifrac")
-```
-
-```{r}
-adonis2(finalPhyseq.prop.dist.bc ~ Simple_Type,
-       data = finalPhyseq.meta)
-```
-My new variable, Simple_Type, is not significant.
-
-```{r}
-beta <- betadisper(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Simple_Type)
-permutest(beta)
-```
-It's not heteroscedastic.
-
-```{r }
-plot(beta, main = "Bray Curtis Beta diversity PCoA by DFM presence/absence")
-```
-
-## ANOSIM
-
-Let's run ANOSIM on the individual factors (using the Bray Curtis metric).  This test seems to have odd issues with stratification with some factors, but as stratifying based on tissue or subject ID seems to have very little effect on significance I will leave it out here.
-
-```{r }
-finalPhyseq.prop.ano <- anosim(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Location)
-finalPhyseq.prop.ano
-```
-Not significant.
-
-
-```{r }
-plot(finalPhyseq.prop.ano, cex.axis = 0.6)
-```
-
-How about Sample_Type?
-
-```{r }
-finalPhyseq.prop.ano <- anosim(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Sample_Type)
-finalPhyseq.prop.ano
-```
-This is significant at 0.1.
-
-```{r }
-plot(finalPhyseq.prop.ano)
-```
-How about Simple_Type?
-
-```{r }
-finalPhyseq.prop.ano <- anosim(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Simple_Type)
-finalPhyseq.prop.ano
-```
-This is significant.
-
-How about Breed?
-
-```{r }
-finalPhyseq.prop.ano <- anosim(finalPhyseq.prop.dist.bc, finalPhyseq.meta$Breed)
-finalPhyseq.prop.ano
-```
-This is significant.
-
-```{r }
-plot(finalPhyseq.prop.ano)
-```
-
 
 ## Differential abundance analysis
-
-Add Simple_Type to physeq.prev.
-
-```{r}
-sample_data(physeq.prev)$Simple_Type <- sample_data(physeq.prev)$Sample_Type
-levels(sample_data(physeq.prev)$Simple_Type) <- c("NPL_TTA","NPL_TTA","BAL")
-```
-
 
 Run DESeq2.
 
@@ -1608,7 +1684,7 @@ for(x in 1:2){
                                              n.all[x],  # num
                                              n.all[y]), # denom
                                 physeq = physeq.prev,
-                                file = paste("results/diff-abund/simple_type/table/Diff-Abund_", n.all[x], "-vs-", n.all[y], ".txt", sep="")
+                                file = paste("results/diff-abund/simple_type/tables/Diff-Abund_", n.all[x], "-vs-", n.all[y], ".txt", sep="")
       )
       plotDESeq2ResFamily(res.test)
       f <- paste("Diff-Abund_Family_", n.all[x], "-vs-", n.all[y], ".pdf", sep="")
@@ -1627,8 +1703,8 @@ for(x in 1:2){
 
 # Add extra label column
 ```{r}
-sample_data(physeq.test)$label <- paste(sample_data(physeq.test)$Horse, sample_data(physeq.test)$Sex, sample_data(physeq.test)$Location, sep = ".")
-physeq.active <- physeq.test
+sample_data(physeq.prev)$label <- paste(sample_data(physeq.prev)$Horse, sample_data(physeq.prev)$Sex, sample_data(physeq.prev)$Location, sep = ".")
+physeq.active <- physeq.prev
 
 ```
 
@@ -1648,30 +1724,31 @@ no.na <- !is.na(tax_table(physeq.heat.glom)[,"Genus"])
 Bray-Curtis heatmap
 ```{r}
 p <- plot_heatmap(physeq.heat.glom,
-                  method = "NMDS",
+                  method = "PCoA",
                   distance = "bray",
                   taxa.label = "Genus",
                   sample.label = "label",
-                  sample.order = "Sex",
+                  sample.order = "Sample_Type",
                   trans = log_trans(2),
-                  title = "NMDS Bray-Curtis Heatmap")
+                  title = "PCoA Bray-Curtis Heatmap")
 p + theme(axis.text.y = element_text(face = 'italic', size = 8), axis.text.x = element_text(size = 8)) 
 
-ggsave("bray-curtis-genus-level-heatmap-orderedBySexAndHorse.pdf", path = "~/Desktop/hpcbio-git/bishop-Shoreline-2021-Dec/TADA-Shoreline/results/heatmaps", device = "pdf")
+ggsave("bray-curtis-genus-level-heatmap-orderedBySampleType.pdf", path = "results/heatmaps", device = "pdf")
 ```
+
 Weighted Unifrac heatmap
 ```{r}
 p <- plot_heatmap(physeq.heat.glom,
-                  method = "NMDS",
+                  method = "PCoA",
                   distance = "wunifrac",
                   taxa.label = "Genus",
                   sample.label = "label",
                   sample.order = "Sample_Type",
                   trans = log_trans(2),
-                  title = "NMDS Weighted Unifrac Heatmap")
+                  title = "PCoA Weighted Unifrac Heatmap")
 p + theme(axis.text.y = element_text(face = 'italic', size = 8), axis.text.x = element_text(size = 8)) 
 
-ggsave("weighted-unifrac-genus-level-heatmap-orderedBySampleType.pdf", path = "~/Desktop/hpcbio-git/bishop-Shoreline-2021-Dec/TADA-Shoreline/results/heatmaps", device = "pdf")
+ggsave("weighted-unifrac-genus-level-heatmap-orderedBySampleType.pdf", path = "results/heatmaps", device = "pdf")
 ```
 
 
@@ -1695,32 +1772,32 @@ tax_table(physeq.heat.glom)[,"Species"] = paste(tax_table(physeq.heat.glom)[,"Ge
 Bray-Curtis heatmap
 ```{r}
 p <- plot_heatmap(physeq.heat.glom,
-                  method = "NMDS",
+                  method = "PCoA",
                   distance = "bray",
                   taxa.label = "Species",
                   sample.label = "label",
                   sample.order = "Location",
                   trans = log_trans(2),
-                  title = "NMDS Bray-Curtis Heatmap")
+                  title = "PCoA Bray-Curtis Heatmap")
 p + theme(axis.text.y = element_text(face = 'italic', size = 8), axis.text.x = element_text(size = 8)) 
 
-ggsave("bray-curtis-species-level-heatmap-orderedByLocation.pdf", path = "~/Desktop/hpcbio-git/bishop-Shoreline-2021-Dec/TADA-Shoreline/results/heatmaps", device = "pdf")
+ggsave("bray-curtis-species-level-heatmap-orderedByLocation.pdf", path = "results/heatmaps", device = "pdf")
 ```
 
 Weighted Unifrac heatmap
   # Note to self: make loop for different variables to order by
 ```{r}
 p <- plot_heatmap(physeq.heat.glom,
-                  method = "NMDS",
+                  method = "PCoA",
                   distance = "wunifrac",
                   taxa.label = "Species",
                   sample.label = "label",
-                  sample.order = "Sex",
+                  sample.order = "Location",
                   trans = log_trans(2),
-                  title = "NMDS Weighted Unifrac Heatmap")
+                  title = "PCoA Weighted Unifrac Heatmap")
 p + theme(axis.text.y = element_text(face = 'italic', size = 8), axis.text.x = element_text(size = 8)) 
 
-ggsave("weighted-unifrac-species-level-heatmap-orderedBySexAndHorse.pdf", path = "~/Desktop/hpcbio-git/bishop-Shoreline-2021-Dec/TADA-Shoreline/results/heatmaps", device = "pdf")
+ggsave("weighted-unifrac-species-level-heatmap-orderedByLocation.pdf", path = "results/heatmaps", device = "pdf")
 ```
 
 
@@ -1729,7 +1806,7 @@ ggsave("weighted-unifrac-species-level-heatmap-orderedBySexAndHorse.pdf", path =
 # Save
 
 ```{r }
-saveRDS(physeq.prop, file = "~/Desktop/hpcbio-git/bishop-Shoreline-2021-Dec/TADA-Shoreline/results/phyloseq-prev-prop.RDS")
+saveRDS(physeq.prop, file = "results/phyloseq-prev-prop.RDS")
 ```
 
 # Session
@@ -1737,4 +1814,80 @@ saveRDS(physeq.prop, file = "~/Desktop/hpcbio-git/bishop-Shoreline-2021-Dec/TADA
 ```{r }
 sessionInfo()
 ```
+R version 4.3.0 Patched (2023-06-03 r84490)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS Ventura 13.5.1
 
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: America/Chicago
+tzcode source: internal
+
+attached base packages:
+[1] parallel  stats4    stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] microViz_0.11.0              DESeq2_1.40.1                SummarizedExperiment_1.30.1  MatrixGenerics_1.12.0       
+ [5] matrixStats_1.0.0            GenomicRanges_1.52.0         phyloseq.extended_0.0.0.9000 plotly_4.10.2               
+ [9] picante_1.8.2                dada2_1.28.0                 Rcpp_1.0.10                  readxl_1.4.2                
+[13] gridExtra_2.3                reshape2_1.4.4               scales_1.2.1                 exactRankTests_0.8-35       
+[17] Biostrings_2.68.1            GenomeInfoDb_1.36.0          XVector_0.40.0               IRanges_2.34.0              
+[21] S4Vectors_0.38.1             ranacapa_0.1.0               microbiome_1.22.0            plotly.microbiome_0.0.9003  
+[25] devtools_2.4.5               usethis_2.2.0                lsmeans_2.30-0               emmeans_1.8.8               
+[29] nlme_3.1-162                 lmerTest_3.1-3               lme4_1.1-33                  WGCNA_1.72-1                
+[33] fastcluster_1.2.3            dynamicTreeCut_1.63-1        mixOmics_6.24.0              MASS_7.3-60                 
+[37] ggpubr_0.6.0                 vegan_2.6-4                  lattice_0.21-8               permute_0.9-7               
+[41] ggdendro_0.1.23              biomformat_1.28.0            ape_5.7-1                    metagenomeSeq_1.42.0        
+[45] RColorBrewer_1.1-3           glmnet_4.1-8                 Matrix_1.5-4.1               limma_3.56.2                
+[49] Biobase_2.60.0               BiocGenerics_0.46.0          phyloseq_1.44.0              lubridate_1.9.2             
+[53] forcats_1.0.0                stringr_1.5.0                dplyr_1.1.2                  purrr_1.0.1                 
+[57] readr_2.1.4                  tidyr_1.3.0                  tibble_3.2.1                 ggplot2_3.4.2               
+[61] tidyverse_2.0.0              knitr_1.43                  
+
+loaded via a namespace (and not attached):
+  [1] fs_1.6.2                    bitops_1.0-7                httr_1.4.6                  doParallel_1.0.17          
+  [5] numDeriv_2016.8-1.1         profvis_0.3.8               tools_4.3.0                 backports_1.4.1            
+  [9] utf8_1.2.3                  R6_2.5.1                    lazyeval_0.2.2              mgcv_1.8-42                
+ [13] rhdf5filters_1.12.1         urlchecker_1.0.1            withr_2.5.0                 prettyunits_1.1.1          
+ [17] preprocessCore_1.62.1       textshaping_0.3.6           cli_3.6.1                   TSP_1.2-4                  
+ [21] labeling_0.4.2              mvtnorm_1.2-3               dittoSeq_1.12.0             ggridges_0.5.4             
+ [25] systemfonts_1.0.4           Rsamtools_2.16.0            foreign_0.8-84              sessioninfo_1.2.2          
+ [29] rstudioapi_0.14             impute_1.74.1               RSQLite_2.3.1               generics_0.1.3             
+ [33] shape_1.4.6                 hwriter_1.3.2.1             crosstalk_1.2.0             vroom_1.6.3                
+ [37] gtools_3.9.4                car_3.1-2                   GO.db_3.17.0                interp_1.1-4               
+ [41] fansi_1.0.4                 abind_1.4-5                 lifecycle_1.0.3             yaml_2.3.7                 
+ [45] carData_3.0-5               Rtsne_0.16                  gplots_3.1.3                rhdf5_2.44.0               
+ [49] grid_4.3.0                  blob_1.2.4                  promises_1.2.0.1            crayon_1.5.2               
+ [53] miniUI_0.1.1.1              cowplot_1.1.1               KEGGREST_1.40.0             pillar_1.9.0               
+ [57] boot_1.3-28.1               estimability_1.4.1          corpcor_1.6.10              codetools_0.2-19           
+ [61] glue_1.6.2                  ShortRead_1.58.0            data.table_1.14.8           remotes_2.4.2              
+ [65] vctrs_0.6.2                 png_0.1-8                   testthat_3.1.8              cellranger_1.1.0           
+ [69] gtable_0.3.3                cachem_1.0.8                xfun_0.39                   S4Arrays_1.0.4             
+ [73] mime_0.12                   survival_3.5-5              seriation_1.4.2             pheatmap_1.0.12            
+ [77] SingleCellExperiment_1.22.0 iterators_1.0.14            ellipsis_0.3.2              bit64_4.0.5                
+ [81] rprojroot_2.0.3             KernSmooth_2.23-21          rpart_4.1.19                colorspace_2.1-0           
+ [85] DBI_1.1.3                   Hmisc_5.1-0                 nnet_7.3-19                 ade4_1.7-22                
+ [89] NADA_1.6-1.1                tidyselect_1.2.0            processx_3.8.1              bit_4.0.5                  
+ [93] compiler_4.3.0              htmlTable_2.4.1             desc_1.4.2                  DelayedArray_0.26.3        
+ [97] checkmate_2.2.0             caTools_1.18.2              callr_3.7.3                 digest_0.6.31              
+[101] minqa_1.2.5                 rmarkdown_2.22              ca_0.71.1                   jpeg_0.1-10                
+[105] htmltools_0.5.5             pkgconfig_2.0.3             base64enc_0.1-3             fastmap_1.1.1              
+[109] rlang_1.1.1                 htmlwidgets_1.6.2           shiny_1.7.4                 zCompositions_1.4.0-1      
+[113] farver_2.1.1                jsonlite_1.8.5              BiocParallel_1.34.2         RCurl_1.98-1.12            
+[117] magrittr_2.0.3              Formula_1.2-5               GenomeInfoDbData_1.2.10     Rhdf5lib_1.22.0            
+[121] munsell_0.5.0               viridis_0.6.3               stringi_1.7.12              brio_1.1.3                 
+[125] zlibbioc_1.46.0             plyr_1.8.8                  pkgbuild_1.4.0              ggrepel_0.9.3              
+[129] deldir_1.0-9                splines_4.3.0               multtest_2.56.0             hms_1.1.3                  
+[133] locfit_1.5-9.8              ps_1.7.5                    igraph_1.4.3                ggsignif_0.6.4             
+[137] Wrench_1.18.0               pkgload_1.3.2               evaluate_0.21               latticeExtra_0.6-30        
+[141] BiocManager_1.30.20         RcppParallel_5.1.7          nloptr_2.0.3                tzdb_0.4.0                 
+[145] foreach_1.5.2               httpuv_1.6.11               broom_1.0.4                 xtable_1.8-4               
+[149] RSpectra_0.16-1             rstatix_0.7.2               later_1.3.1                 ragg_1.2.5                 
+[153] viridisLite_0.4.2           truncnorm_1.0-9             rARPACK_0.11-0              registry_0.5-1             
+[157] GenomicAlignments_1.36.0    memoise_2.0.1               AnnotationDbi_1.62.1        ellipse_0.4.5              
+[161] cluster_2.1.4               timechange_0.2.0           
